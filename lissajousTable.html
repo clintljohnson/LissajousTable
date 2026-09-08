@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Lissajous Table</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #000;
+    overflow: hidden;
+  }
+  body {
+    display: grid;
+    place-items: center;
+  }
+  canvas {
+    display: block;
+    background: #000;
+    touch-action: none;
+  }
+
+  /* ---- transient overlays (both fade to nothing and stay out of the way) ---- */
+  .overlay {
+    position: fixed;
+    left: 50%;
+    transform: translateX(-50%);
+    font: 400 15px/1.5 ui-sans-serif, -apple-system, "Segoe UI", Roboto, Helvetica, sans-serif;
+    color: #f2f2f2;
+    background: rgba(18, 18, 18, 0.78);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 999px;
+    padding: 11px 22px;
+    white-space: nowrap;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 900ms ease;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+  }
+  .overlay.show { opacity: 1; transition-duration: 260ms; }
+
+  #hint  { bottom: 8vh; letter-spacing: 0.01em; }
+  #speed { top: 8vh; font-variant-numeric: tabular-nums; padding: 8px 18px; font-size: 14px; }
+
+  kbd {
+    font: inherit;
+    background: rgba(255, 255, 255, 0.13);
+    border-radius: 5px;
+    padding: 1px 7px;
+    margin: 0 1px;
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div class="overlay" id="hint"><kbd>&uarr;</kbd><kbd>&rarr;</kbd> faster &nbsp;&middot;&nbsp; <kbd>&darr;</kbd><kbd>&larr;</kbd> slower &nbsp;&middot;&nbsp; <kbd>esc</kbd> pause &nbsp;&middot;&nbsp; <kbd>space</kbd> draw again</div>
+<div class="overlay" id="speed"></div>
+
+<script>
+"use strict";
+
+/* ============================================================
+   Lissajous table
+   Grid of 11 x 11 cells. Row 0 and column 0 are the reference
+   oscillators, drawn as circles. Cell (i, j) traces the pair:
+       x = sin(j * t)   from the column oscillator
+       y = cos(i * t)   from the row oscillator
+   so the diagonal is a circle and (2,1) is a parabola, etc.
+   ============================================================ */
+
+const N       = 10;          // oscillators; grid is (N+1) x (N+1)
+const GRID    = N + 1;
+const R_CELL  = 0.40;        // curve amplitude as a fraction of cell size
+const LW_CELL = 0.0242;      // stroke width as a fraction of cell size
+const DOT_HDR = 0.098;       // header dot radius, fraction of cell size
+const DOT_IN  = 0.047;       // interior dot radius, fraction of cell size
+const BG      = "#000000";
+const PERIOD  = 6.24;        // seconds for the slowest oscillator, at 1x
+
+// Palette sampled from the source animation, one colour per oscillator.
+const PALETTE = [
+  [207,  77,  80], [206, 110,  65], [207, 153,  52], [164, 162,  55], [108, 149,  86],
+  [ 69, 144, 122], [ 60, 128, 138], [ 59, 112, 158], [ 97,  91, 149], [124,  77, 140]
+];
+
+// Interior cells average the two oscillator colours in RGB.
+function cellColor(i, j) {
+  if (i === 0) return rgb(PALETTE[j - 1]);
+  if (j === 0) return rgb(PALETTE[i - 1]);
+  const a = PALETTE[i - 1], b = PALETTE[j - 1];
+  return rgb([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2]);
+}
+const rgb = c => `rgb(${Math.round(c[0])},${Math.round(c[1])},${Math.round(c[2])})`;
+
+// Frequencies driving a cell. Headers use their own index on both axes.
+const freqX = (i, j) => (j > 0 ? j : i);
+const freqY = (i, j) => (i > 0 ? i : j);
+
+const TAU    = Math.PI * 2;
+const canvas = document.getElementById("stage");
+const ctx    = canvas.getContext("2d");
+const curves = document.createElement("canvas");   // static layer, drawn once per resize
+const cctx   = curves.getContext("2d");
+
+let side = 0, cell = 0, radius = 0, dpr = 1;
+
+// How far each curve has been traced so far, in radians of t. The whole table
+// finishes together at t = TAU, since every cell shares the same parameter.
+let traced = 0;
+
+function layout() {
+  dpr  = Math.min(window.devicePixelRatio || 1, 2);
+  side = Math.floor(Math.min(window.innerWidth, window.innerHeight));
+
+  canvas.style.width = canvas.style.height = side + "px";
+  canvas.width = curves.width = Math.round(side * dpr);
+  canvas.height = curves.height = Math.round(side * dpr);
+
+  cell   = (side * dpr) / GRID;
+  radius = cell * R_CELL;
+
+  clearCurves();
+  traceTo(traced);          // rebuild whatever had been drawn before the resize
+}
+
+function clearCurves() {
+  cctx.fillStyle = BG;
+  cctx.fillRect(0, 0, curves.width, curves.height);
+  cctx.lineWidth = Math.max(0.9 * dpr, cell * LW_CELL);
+  cctx.lineJoin = cctx.lineCap = "round";
+}
+
+// Stroke the arc of every cell between t = from and t = to, appending to the
+// static layer. Sub-steps scale with the arc length so fast cells stay smooth.
+function traceTo(to, from) {
+  from = from || 0;
+  const span = to - from;
+  if (span <= 0) return;
+
+  for (let i = 0; i < GRID; i++) {
+    for (let j = 0; j < GRID; j++) {
+      if (i === 0 && j === 0) continue;            // empty corner
+      const cx = (j + 0.5) * cell, cy = (i + 0.5) * cell;
+      const fx = freqX(i, j), fy = freqY(i, j);
+      const steps = Math.max(2, Math.ceil(240 * Math.max(fx, fy) * span / TAU));
+
+      cctx.beginPath();
+      for (let s = 0; s <= steps; s++) {
+        const t = from + (span * s) / steps;
+        const x = cx + radius * Math.sin(fx * t);
+        const y = cy - radius * Math.cos(fy * t);
+        s ? cctx.lineTo(x, y) : cctx.moveTo(x, y);
+      }
+      cctx.strokeStyle = cellColor(i, j);
+      cctx.stroke();
+    }
+  }
+}
+
+function restart() {
+  traced = 0;
+  phase  = 0;
+  paused = false;
+  clearCurves();
+}
+
+function drawDots(phase) {
+  ctx.drawImage(curves, 0, 0);
+  ctx.fillStyle = "#fff";
+  for (let i = 0; i < GRID; i++) {
+    for (let j = 0; j < GRID; j++) {
+      if (i === 0 && j === 0) continue;
+      const cx = (j + 0.5) * cell, cy = (i + 0.5) * cell;
+      const fx = freqX(i, j), fy = freqY(i, j);
+      const r = cell * (i === 0 || j === 0 ? DOT_HDR : DOT_IN);
+      ctx.beginPath();
+      ctx.arc(cx + radius * Math.sin(fx * phase),
+              cy - radius * Math.cos(fy * phase), r, 0, TAU);
+      ctx.fill();
+    }
+  }
+}
+
+/* ---- animation ---- */
+
+const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+const OMEGA   = TAU / PERIOD;
+const STEP    = 0.1;
+const MAX     = 4;
+
+let speed = reduced ? 0 : 1;
+let phase = 0;
+let last  = null;
+let paused = false;
+
+function frame(now) {
+  if (last === null) last = now;
+  const dt = Math.min((now - last) / 1000, 0.1);
+  last = now;
+
+  if (paused) {
+    drawDots(phase);                              // hold the frame so dots stay readable
+    requestAnimationFrame(frame);
+    return;
+  }
+
+  if (traced < TAU) {
+    // Drawing-in pass: the dots ride the head of each growing curve.
+    const next = Math.min(TAU, traced + dt * OMEGA * Math.abs(speed));
+    traceTo(next, traced);
+    traced = next;
+    phase  = traced;
+  } else {
+    phase = (phase + dt * OMEGA * speed) % TAU;
+  }
+
+  drawDots(phase);
+  requestAnimationFrame(frame);
+}
+
+/* ---- controls ---- */
+
+const hint     = document.getElementById("hint");
+const speedTag = document.getElementById("speed");
+let hintTimer, speedTimer;
+
+function flash(el, ms) {
+  el.classList.add("show");
+  return setTimeout(() => el.classList.remove("show"), ms);
+}
+
+function showSpeed() {
+  speedTag.textContent = speed.toFixed(1) + "\u00d7";
+  clearTimeout(speedTimer);
+  speedTimer = flash(speedTag, 1100);
+}
+
+addEventListener("keydown", e => {
+  if (e.key === "Escape") {
+    e.preventDefault();
+    paused = !paused;
+    if (paused) {
+      clearTimeout(speedTimer);
+      speedTag.textContent = "paused";
+      speedTimer = flash(speedTag, 1100);
+    } else {
+      showSpeed();
+    }
+    clearTimeout(hintTimer);
+    hint.classList.remove("show");
+    return;
+  }
+
+  if (e.key === " " || e.code === "Space") {
+    e.preventDefault();
+    restart();
+    clearTimeout(hintTimer);
+    hint.classList.remove("show");
+    return;
+  }
+
+  let delta = 0;
+  if (e.key === "ArrowUp"   || e.key === "ArrowRight") delta =  STEP;
+  if (e.key === "ArrowDown" || e.key === "ArrowLeft")  delta = -STEP;
+  if (!delta) return;
+  e.preventDefault();
+
+  speed = Math.round(Math.min(MAX, Math.max(-MAX, speed + delta)) * 10) / 10;
+  if (Object.is(speed, -0)) speed = 0;
+  showSpeed();
+
+  clearTimeout(hintTimer);
+  hint.classList.remove("show");
+});
+
+addEventListener("resize", layout);
+
+layout();
+requestAnimationFrame(frame);
+hint.classList.add("show");
+hintTimer = setTimeout(() => hint.classList.remove("show"), 3000);
+</script>
+</body>
+</html>
