@@ -41,8 +41,20 @@
   }
   .overlay.show { opacity: 1; transition-duration: 260ms; }
 
-  #hint  { bottom: 8vh; letter-spacing: 0.01em; }
-  #speed { top: 8vh; font-variant-numeric: tabular-nums; padding: 8px 18px; font-size: 14px; }
+  #hint { bottom: 8vh; letter-spacing: 0.01em; }
+
+  /* The speed readout lives in the empty top-left cell of the table. Its
+     left/top/font-size are set from layout() so it stays centred in that cell
+     at any window size; the transform re-centres it on that point. */
+  #speed {
+    left: 0;
+    top: 0;
+    transform: translate(-50%, -50%);
+    font-variant-numeric: tabular-nums;
+    font-size: 14px;
+    padding: 8px 18px;
+    text-align: center;
+  }
 
   kbd {
     font: inherit;
@@ -55,6 +67,7 @@
 </head>
 <body>
 <canvas id="stage"></canvas>
+
 <div class="overlay" id="hint"><kbd>&uarr;</kbd><kbd>&rarr;</kbd> faster &nbsp;&middot;&nbsp; <kbd>&darr;</kbd><kbd>&larr;</kbd> slower &nbsp;&middot;&nbsp; <kbd>esc</kbd> pause &nbsp;&middot;&nbsp; <kbd>space</kbd> draw again</div>
 <div class="overlay" id="speed"></div>
 
@@ -63,26 +76,29 @@
 
 /* ============================================================
    Lissajous table
+
    Grid of 11 x 11 cells. Row 0 and column 0 are the reference
    oscillators, drawn as circles. Cell (i, j) traces the pair:
+
        x = sin(j * t)   from the column oscillator
        y = cos(i * t)   from the row oscillator
+
    so the diagonal is a circle and (2,1) is a parabola, etc.
    ============================================================ */
 
-const N       = 10;          // oscillators; grid is (N+1) x (N+1)
-const GRID    = N + 1;
-const R_CELL  = 0.40;        // curve amplitude as a fraction of cell size
-const LW_CELL = 0.0242;      // stroke width as a fraction of cell size
-const DOT_HDR = 0.098;       // header dot radius, fraction of cell size
-const DOT_IN  = 0.047;       // interior dot radius, fraction of cell size
-const BG      = "#000000";
-const PERIOD  = 6.24;        // seconds for the slowest oscillator, at 1x
+const N = 10;              // oscillators; grid is (N+1) x (N+1)
+const GRID = N + 1;
+const R_CELL  = 0.40;      // curve amplitude as a fraction of cell size
+const LW_CELL = 0.0242;    // stroke width as a fraction of cell size
+const DOT_HDR = 0.098;     // header dot radius, fraction of cell size
+const DOT_IN  = 0.047;     // interior dot radius, fraction of cell size
+const BG = "#000000";
+const PERIOD = 6.24;       // seconds for the slowest oscillator, at 1x
 
 // Palette sampled from the source animation, one colour per oscillator.
 const PALETTE = [
-  [207,  77,  80], [206, 110,  65], [207, 153,  52], [164, 162,  55], [108, 149,  86],
-  [ 69, 144, 122], [ 60, 128, 138], [ 59, 112, 158], [ 97,  91, 149], [124,  77, 140]
+  [207, 77, 80], [206, 110, 65], [207, 153, 52], [164, 162, 55], [108, 149, 86],
+  [ 69, 144, 122], [ 60, 128, 138], [ 59, 112, 158], [ 97, 91, 149], [124, 77, 140]
 ];
 
 // Interior cells average the two oscillator colours in RGB.
@@ -98,11 +114,15 @@ const rgb = c => `rgb(${Math.round(c[0])},${Math.round(c[1])},${Math.round(c[2])
 const freqX = (i, j) => (j > 0 ? j : i);
 const freqY = (i, j) => (i > 0 ? i : j);
 
-const TAU    = Math.PI * 2;
+const TAU = Math.PI * 2;
+
 const canvas = document.getElementById("stage");
-const ctx    = canvas.getContext("2d");
+const ctx = canvas.getContext("2d");
 const curves = document.createElement("canvas");   // static layer, drawn once per resize
-const cctx   = curves.getContext("2d");
+const cctx = curves.getContext("2d");
+
+const hint = document.getElementById("hint");
+const speedTag = document.getElementById("speed");
 
 let side = 0, cell = 0, radius = 0, dpr = 1;
 
@@ -111,18 +131,32 @@ let side = 0, cell = 0, radius = 0, dpr = 1;
 let traced = 0;
 
 function layout() {
-  dpr  = Math.min(window.devicePixelRatio || 1, 2);
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
   side = Math.floor(Math.min(window.innerWidth, window.innerHeight));
-
   canvas.style.width = canvas.style.height = side + "px";
-  canvas.width = curves.width = Math.round(side * dpr);
+  canvas.width  = curves.width  = Math.round(side * dpr);
   canvas.height = curves.height = Math.round(side * dpr);
-
-  cell   = (side * dpr) / GRID;
+  cell = (side * dpr) / GRID;
   radius = cell * R_CELL;
-
+  placeSpeedTag();
   clearCurves();
-  traceTo(traced);          // rebuild whatever had been drawn before the resize
+  traceTo(traced);           // rebuild whatever had been drawn before the resize
+}
+
+// Park the speed readout in the middle of the table's empty top-left cell.
+// The canvas is centred in the viewport, so the cell's origin is just the
+// canvas offset, and one CSS cell is side / GRID.
+function placeSpeedTag() {
+  const cellCss = side / GRID;
+  const originX = (window.innerWidth  - side) / 2;
+  const originY = (window.innerHeight - side) / 2;
+  speedTag.style.left = (originX + cellCss / 2) + "px";
+  speedTag.style.top  = (originY + cellCss / 2) + "px";
+
+  // Scale the pill so it stays inside the cell on small windows.
+  const fs = Math.max(9, Math.min(14, cellCss * 0.19));
+  speedTag.style.fontSize = fs.toFixed(1) + "px";
+  speedTag.style.padding = Math.round(fs * 0.45) + "px " + Math.round(fs * 0.8) + "px";
 }
 
 function clearCurves() {
@@ -141,7 +175,7 @@ function traceTo(to, from) {
 
   for (let i = 0; i < GRID; i++) {
     for (let j = 0; j < GRID; j++) {
-      if (i === 0 && j === 0) continue;            // empty corner
+      if (i === 0 && j === 0) continue;             // empty corner
       const cx = (j + 0.5) * cell, cy = (i + 0.5) * cell;
       const fx = freqX(i, j), fy = freqY(i, j);
       const steps = Math.max(2, Math.ceil(240 * Math.max(fx, fy) * span / TAU));
@@ -161,7 +195,7 @@ function traceTo(to, from) {
 
 function restart() {
   traced = 0;
-  phase  = 0;
+  phase = 0;
   paused = false;
   clearCurves();
 }
@@ -184,15 +218,14 @@ function drawDots(phase) {
 }
 
 /* ---- animation ---- */
-
 const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-const OMEGA   = TAU / PERIOD;
-const STEP    = 0.1;
-const MAX     = 4;
+const OMEGA = TAU / PERIOD;
+const STEP = 0.1;
+const MAX = 4;
 
 let speed = reduced ? 0 : 1;
 let phase = 0;
-let last  = null;
+let last = null;
 let paused = false;
 
 function frame(now) {
@@ -201,7 +234,7 @@ function frame(now) {
   last = now;
 
   if (paused) {
-    drawDots(phase);                              // hold the frame so dots stay readable
+    drawDots(phase);          // hold the frame so dots stay readable
     requestAnimationFrame(frame);
     return;
   }
@@ -211,7 +244,7 @@ function frame(now) {
     const next = Math.min(TAU, traced + dt * OMEGA * Math.abs(speed));
     traceTo(next, traced);
     traced = next;
-    phase  = traced;
+    phase = traced;
   } else {
     phase = (phase + dt * OMEGA * speed) % TAU;
   }
@@ -221,9 +254,6 @@ function frame(now) {
 }
 
 /* ---- controls ---- */
-
-const hint     = document.getElementById("hint");
-const speedTag = document.getElementById("speed");
 let hintTimer, speedTimer;
 
 function flash(el, ms) {
@@ -270,7 +300,6 @@ addEventListener("keydown", e => {
   speed = Math.round(Math.min(MAX, Math.max(-MAX, speed + delta)) * 10) / 10;
   if (Object.is(speed, -0)) speed = 0;
   showSpeed();
-
   clearTimeout(hintTimer);
   hint.classList.remove("show");
 });
@@ -279,8 +308,10 @@ addEventListener("resize", layout);
 
 layout();
 requestAnimationFrame(frame);
+
 hint.classList.add("show");
 hintTimer = setTimeout(() => hint.classList.remove("show"), 3000);
 </script>
 </body>
 </html>
+
